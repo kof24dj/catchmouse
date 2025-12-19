@@ -1,0 +1,329 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>貓咪抓老鼠 明亮版</title>
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; user-select: none; font-family: 'Arial Black', sans-serif; }
+        
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 100;
+        }
+        
+        #score-board {
+            position: absolute; top: 20px; left: 20px;
+            color: #FFD700; font-size: 32px; text-shadow: 2px 2px 0 #000;
+        }
+
+        #timer-display {
+            position: absolute; top: 20px; right: 20px;
+            color: white; font-size: 40px; font-weight: bold;
+            text-shadow: 2px 2px 0 #F00;
+        }
+        
+        #stamina-container {
+            position: absolute; bottom: 30px; right: 30px;
+            width: 200px; height: 25px;
+            background: rgba(0,0,0,0.8); border: 2px solid #FFF; border-radius: 15px; overflow: hidden;
+        }
+        #stamina-bar {
+            width: 100%; height: 100%; background: linear-gradient(90deg, #FFD700, #FF4500);
+            transition: width 0.1s;
+        }
+
+        #controls-hint {
+            position: absolute; bottom: 30px; left: 30px;
+            color: rgba(255,255,255,0.8); font-size: 16px;
+            background: rgba(0,0,0,0.5); padding: 15px; border-radius: 10px;
+        }
+        .key { border: 1px solid #AAA; padding: 2px 6px; border-radius: 4px; background: rgba(0,0,0,0.3); font-weight: bold; color: #FFF; }
+
+        #end-screen {
+            display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); z-index: 200; pointer-events: auto;
+            flex-direction: column; justify-content: center; align-items: center; color: white;
+        }
+        #end-title { font-size: 80px; margin: 0; text-shadow: 0 0 30px currentColor; }
+        #end-msg { font-size: 24px; margin-bottom: 30px; color: #DDD; }
+        #restart-btn {
+            padding: 15px 50px; font-size: 24px; font-weight: bold;
+            background: #FFF; color: #333; border: none; border-radius: 50px;
+            cursor: pointer; transition: transform 0.2s;
+        }
+        #restart-btn:hover { transform: scale(1.1); }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div id="score-board">🐭 <span id="score">0</span> / 5</div>
+        <div id="timer-display">⏱️ <span id="time-left">60</span></div>
+        <div id="stamina-container"><div id="stamina-bar"></div></div>
+        <div id="controls-hint">
+            <p><span class="key">↑↓←→</span> 移動 (轉向已加速)</p>
+            <p><span class="key">Shift</span> 衝刺</p>
+            <p><span class="key">Space</span> 跳過障礙</p>
+        </div>
+    </div>
+
+    <div id="end-screen">
+        <h1 id="end-title">VICTORY!</h1>
+        <p id="end-msg">你抓住了所有老鼠！</p>
+        <button id="restart-btn" onclick="location.reload()">再試一次</button>
+    </div>
+
+    <a-scene vr-mode-ui="enabled: false" shadow="type: pcfsoft" fog="type: exponential; color: #DDD; density: 0.02">
+        <a-assets>
+            <img id="street-img" src="street360.jpg">
+            <a-asset-item id="cat-obj" src="cat.obj"></a-asset-item>
+            <a-asset-item id="cat-mtl" src="cat.mtl"></a-asset-item>
+        </a-assets>
+
+        <a-sky src="#street-img" rotation="0 -90 0"></a-sky>
+
+        <a-plane position="0 0.1 0" rotation="-90 0 0" width="100" height="100"
+                 material="color: #000; opacity: 0.5; transparent: true" shadow="receive: true"></a-plane>
+
+        <a-entity light="type: ambient; color: #FFF; intensity: 1.3"></a-entity>
+        <a-entity light="type: directional; color: #FFD; intensity: 1.4; castShadow: true" 
+                  position="-5 8 5" shadow-camera-automatic="#camera-rig"></a-entity>
+
+        <a-entity id="camera-rig" position="0 0 0">
+            <a-entity camera position="0 3 6" rotation="-25 0 0"></a-entity>
+            <a-entity id="cat-container" position="0 0 0" rotation="0 180 0">
+                <a-entity id="cat-model" obj-model="obj: #cat-obj; mtl: #cat-mtl" 
+                          scale="0.05 0.05 0.05" rotation="-90 0 0" shadow="cast: true"></a-entity>
+            </a-entity>
+        </a-entity>
+        
+        <a-entity id="game-world"></a-entity>
+
+    </a-scene>
+
+    <script>
+        const totalMice = 5;
+        const totalObstacles = 15;
+        const gameDuration = 60;
+        
+        let score = 0;
+        let timeLeft = gameDuration;
+        let isGameOver = false;
+        
+        const catchDistance = 1.8; 
+        
+        let walkSpeed = 0.15;
+        let sprintSpeed = 0.35;
+        let rotateSpeed = 3.0; 
+        
+        let currentSpeed = walkSpeed;
+        let stamina = 100;
+        
+        let rigX = 0, rigY = 0, rigZ = 0, rigRotY = 0;
+        let isJumping = false, jumpVelocity = 0;
+        const gravity = 0.02, jumpStrength = 0.4;
+        let walkAnimTime = 0;
+        
+        const rig = document.querySelector('#camera-rig');
+        const catModel = document.querySelector('#cat-model');
+        const world = document.querySelector('#game-world');
+        const scoreText = document.querySelector('#score');
+        const timeText = document.querySelector('#time-left');
+        const staminaBar = document.querySelector('#stamina-bar');
+        const endScreen = document.querySelector('#end-screen');
+        const endTitle = document.querySelector('#end-title');
+        const endMsg = document.querySelector('#end-msg');
+
+        const keys = { w: false, a: false, s: false, d: false, shift: false, space: false };
+        const updateKey = (e, state) => {
+            const k = e.key.toLowerCase();
+            if(['w','arrowup'].includes(k)) keys.w=state;
+            if(['s','arrowdown'].includes(k)) keys.s=state;
+            if(['a','arrowleft'].includes(k)) keys.a=state;
+            if(['d','arrowright'].includes(k)) keys.d=state;
+            if(k==='shift') keys.shift=state;
+            if(k===' ') keys.space=state;
+        }
+        document.addEventListener('keydown', e => updateKey(e, true));
+        document.addEventListener('keyup', e => updateKey(e, false));
+
+        const obstacles = [];
+        const mice = [];
+
+        function createObstacle(x, z, type) {
+            const el = document.createElement('a-entity');
+            if (type === 'box') {
+                const box = document.createElement('a-box');
+                box.setAttribute('position', `${x} 0.75 ${z}`);
+                box.setAttribute('color', '#8B4513');
+                box.setAttribute('width', '1.5'); box.setAttribute('height', '1.5'); box.setAttribute('depth', '1.5');
+                box.setAttribute('shadow', 'cast: true; receive: true');
+                el.appendChild(box);
+            } else {
+                const cyl = document.createElement('a-cylinder');
+                cyl.setAttribute('position', `${x} 1 ${z}`);
+                cyl.setAttribute('color', '#555');
+                cyl.setAttribute('height', '2'); cyl.setAttribute('radius', '0.6');
+                cyl.setAttribute('shadow', 'cast: true; receive: true');
+                el.appendChild(cyl);
+            }
+            world.appendChild(el);
+            obstacles.push({x, z, r: 1.0});
+        }
+
+        for(let i=0; i<totalObstacles; i++) {
+            let ox = (Math.random()-0.5)*35;
+            let oz = (Math.random()-0.5)*35;
+            if(Math.abs(ox)<3 && Math.abs(oz)<3) continue;
+            createObstacle(ox, oz, Math.random()>0.5?'box':'cyl');
+        }
+
+        function createMouse() {
+            const el = document.createElement('a-entity');
+            let mx = (Math.random()-0.5)*30;
+            let mz = (Math.random()-0.5)*30;
+            el.setAttribute('position', `${mx} 0.25 ${mz}`);
+            
+            const body = document.createElement('a-sphere');
+            body.setAttribute('color', '#888'); body.setAttribute('radius', '0.2'); body.setAttribute('scale', '1 0.8 1.5');
+            body.setAttribute('shadow', 'cast: true');
+            el.appendChild(body);
+            const tail = document.createElement('a-cylinder'); tail.setAttribute('color', 'pink'); tail.setAttribute('radius', '0.02'); tail.setAttribute('height', '0.5');
+            tail.setAttribute('position', '0 0 0.3'); tail.setAttribute('rotation', '90 0 0'); el.appendChild(tail);
+
+            world.appendChild(el);
+            mice.push({ el: el, x: mx, z: mz, active: true });
+        }
+        for(let i=0; i<totalMice; i++) createMouse();
+
+        const timerInterval = setInterval(() => {
+            if (isGameOver) return;
+            timeLeft--;
+            timeText.innerText = timeLeft;
+            if (timeLeft <= 10) timeText.style.color = 'red';
+            if (timeLeft <= 0) gameOver(false);
+        }, 1000);
+
+        function gameOver(win) {
+            isGameOver = true;
+            clearInterval(timerInterval);
+            endScreen.style.display = 'flex';
+            if (win) {
+                endTitle.innerText = "VICTORY!";
+                endTitle.style.color = "#FFD700";
+                endMsg.innerText = `太強了！剩餘時間: ${timeLeft} 秒`;
+            } else {
+                endTitle.innerText = "GAME OVER";
+                endTitle.style.color = "#FF4500";
+                endMsg.innerText = "時間到！老鼠跑光了...";
+            }
+        }
+
+        function gameLoop() {
+            if (isGameOver) return;
+            let isMoving = false;
+
+            if (keys.shift && stamina > 0) {
+                currentSpeed = sprintSpeed; stamina -= 1.5;
+            } else {
+                currentSpeed = walkSpeed; if (stamina < 100) stamina += 0.5;
+            }
+            staminaBar.style.width = stamina + '%';
+
+            if (keys.a) { rigRotY += rotateSpeed; isMoving = true; }
+            if (keys.d) { rigRotY -= rotateSpeed; isMoving = true; }
+
+            let nextX = rigX;
+            let nextZ = rigZ;
+            const rad = rigRotY * Math.PI / 180;
+
+            if (keys.w) {
+                nextX -= Math.sin(rad) * currentSpeed;
+                nextZ -= Math.cos(rad) * currentSpeed;
+                isMoving = true;
+            }
+            if (keys.s) {
+                nextX += Math.sin(rad) * (currentSpeed * 0.5);
+                nextZ += Math.cos(rad) * (currentSpeed * 0.5);
+                isMoving = true;
+            }
+
+            let collided = false;
+            for(let obs of obstacles) {
+                let dx = nextX - obs.x;
+                let dz = nextZ - obs.z;
+                if(Math.sqrt(dx*dx + dz*dz) < (0.5 + obs.r)) {
+                    collided = true; break;
+                }
+            }
+            
+            if (!collided || rigY > 1.2) {
+                rigX = nextX;
+                rigZ = nextZ;
+            }
+
+            if (keys.space && !isJumping) {
+                isJumping = true; jumpVelocity = jumpStrength;
+            }
+            if (isJumping) {
+                rigY += jumpVelocity;
+                jumpVelocity -= gravity;
+                if (rigY <= 0) { rigY = 0; isJumping = false; jumpVelocity = 0; }
+            }
+
+            rig.setAttribute('position', `${rigX} ${rigY} ${rigZ}`);
+            rig.setAttribute('rotation', `0 ${rigRotY} 0`);
+
+            if (isMoving && !isJumping) {
+                let freq = keys.shift ? 0.35 : 0.15;
+                walkAnimTime += freq;
+                catModel.setAttribute('position', `0 ${Math.sin(walkAnimTime)*0.05} 0`);
+                catModel.setAttribute('rotation', `-90 0 ${Math.cos(walkAnimTime)*3}`);
+            }
+
+            // 老鼠邏輯
+            mice.forEach(mouse => {
+                if (!mouse.active) return;
+                const dx = mouse.x - rigX;
+                const dz = mouse.z - rigZ;
+                const dist = Math.sqrt(dx*dx + dz*dz);
+
+                if (dist < catchDistance) {
+                    mouse.active = false;
+                    if (mouse.el.parentNode) {
+                        mouse.el.parentNode.removeChild(mouse.el);
+                    }
+                    score++;
+                    scoreText.innerText = score;
+                    if (score >= totalMice) gameOver(true);
+                    return;
+                }
+
+                // 逃跑 AI
+                let moveX = 0, moveZ = 0;
+                if (dist < 8) {
+                    moveX = (dx/dist)*0.12; moveZ = (dz/dist)*0.12;
+                    const angle = Math.atan2(moveX, moveZ) * 180 / Math.PI;
+                    mouse.el.setAttribute('rotation', `0 ${angle} 0`);
+                } else {
+                    if(Math.random()<0.05) { mouse.wx = (Math.random()-0.5)*0.05; mouse.wz = (Math.random()-0.5)*0.05; }
+                    moveX = mouse.wx||0; moveZ = mouse.wz||0;
+                }
+                
+                if(Math.abs(mouse.x+moveX)<20) mouse.x+=moveX;
+                if(Math.abs(mouse.z+moveZ)<20) mouse.z+=moveZ;
+                
+                if(mouse.active) {
+                    mouse.el.setAttribute('position', `${mouse.x} 0.25 ${mouse.z}`);
+                }
+            });
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        gameLoop();
+    </script>
+</body>
+</html>
